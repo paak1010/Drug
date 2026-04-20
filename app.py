@@ -1,25 +1,38 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
+from openpyxl.cell.cell import MergedCell
 import io
 import zipfile
 from datetime import datetime
 
-def main():
-    st.set_page_config(page_title="명세서 완벽 제어 자동화", layout="wide")
-    
-    st.title("🎯 원본 엑셀 자동 수정 및 빈 줄 삭제기")
-    st.write("첫 번째 시트 서식을 100% 보존하며, 정확한 로직으로 값만 수정하고 남는 줄을 삭제합니다.")
+# 1. 병합된 셀에도 안전하게 값을 쓰는 함수
+def write_safe(ws, row, col, value):
+    target_cell = ws.cell(row=row, column=col)
+    if isinstance(target_cell, MergedCell):
+        for merged_range in ws.merged_cells.ranges:
+            if target_cell.coordinate in merged_range:
+                # 병합 범위의 시작점(왼쪽 상단) 셀에 값을 입력
+                ws.cell(row=merged_range.min_row, column=merged_range.min_col).value = value
+                return
+    else:
+        target_cell.value = value
 
-    uploaded_file = st.file_uploader("명세서 엑셀 파일을 업로드하세요 (.xlsx)", type=['xlsx'])
+def main():
+    st.set_page_config(page_title="SCM 명세서 자동화 도구", layout="wide")
+    
+    st.title("🎯 원본 서식 유지 및 행 자동 삭제 명세서 생성기")
+    st.write("첫 번째 시트의 양식을 그대로 사용하여 지점별 맞춤 엑셀을 생성합니다.")
+
+    uploaded_file = st.file_uploader("명세서 엑셀 파일(.xlsx)을 업로드하세요", type=['xlsx'])
 
     if uploaded_file:
         try:
-            # 두 번째 시트 로드 (수량 데이터)
+            # 수량 데이터가 있는 두 번째 시트 읽기
             xls = pd.ExcelFile(uploaded_file)
             df_matrix = pd.read_excel(xls, sheet_name=xls.sheet_names[1], header=2)
             
-            if st.button("명세서 엑셀 일괄 생성"):
+            if st.button("지점별 엑셀 파일 일괄 생성"):
                 zip_buffer = io.BytesIO()
                 
                 with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_f:
@@ -29,147 +42,109 @@ def main():
                     for center in centers:
                         is_bonus = '할증' in str(center) or '힐증' in str(center)
                         
-                        # ★ 도화지가 될 원본 엑셀 로드
-                        uploaded_file.seek(0) 
-                        wb = openpyxl.load_workbook(uploaded_file, data_only=False)
+                        # 원본 서식 로드 (data_only=False로 서식 보존)
+                        uploaded_file.seek(0)
+                        wb = openpyxl.load_workbook(uploaded_file)
                         ws = wb.worksheets[0] 
                         
-                        # ----------------------------------------------------
-                        # 1. 엑셀 내에서 "제품명", "낱개가격" 등의 열(Column) 위치 자동 추적
-                        # ----------------------------------------------------
+                        # --- 단계 1: 주요 열 및 행 위치 동적 찾기 ---
+                        col_name = col_qty = col_price = col_total = -1
                         header_row = -1
-                        col_name = col_qty = col_price = col_total = col_inbox = col_box = -1
+                        footer_row = -1
                         
-                        for r in range(1, 30):
-                            for c in range(1, 20):
-                                val = str(ws.cell(row=r, column=c).value).replace(" ", "")
-                                if "제품명" in val:
-                                    header_row = r; col_name = c
-                                elif "낱개수" in val or "날개수" in val: col_qty = c
-                                elif "낱개가격" in val or "날개가격" in val or "단가" in val: col_price = c
-                                elif "공급가액" in val: col_total = c
-                                elif "입수" in val: col_inbox = c
-                                elif "Box" in val or "box" in val.lower(): col_box = c
-                            if header_row != -1:
-                                break
-                        
-                        # ----------------------------------------------------
-                        # 2. "배송처:" 문구 찾아서 지점명으로 변경
-                        # ----------------------------------------------------
-                        for r in range(1, header_row):
+                        for r in range(1, 40):
                             for c in range(1, 20):
                                 val = str(ws.cell(row=r, column=c).value)
+                                if "제품명" in val: 
+                                    header_row = r; col_name = c
+                                elif "낱개수" in val or "날개수" in val: col_qty = c
+                                elif "낱개가격" in val or "날개가격" in val: col_price = c
+                                elif "공급가액" in val: col_total = c
+                                # 배송처 문구 변경
                                 if "배송처" in val:
-                                    ws.cell(row=r, column=c).value = f"배송처: {str(center).strip()}"
+                                    write_safe(ws, r, c, f"배송처: {str(center).strip()}")
                         
-                        # ----------------------------------------------------
-                        # 3. 데이터 끝나는 지점 ("합계") 확인
-                        # ----------------------------------------------------
-                        footer_row = -1
-                        for r in range(header_row + 1, 200):
-                            for c in range(1, 20):
-                                val = str(ws.cell(row=r, column=c).value).replace(" ", "")
-                                if "합계" in val:
+                        # 합계 행 찾기
+                        for r in range(header_row + 1, 150):
+                            for c in range(1, 15):
+                                if "합계" in str(ws.cell(row=r, column=c).value):
                                     footer_row = r
                                     break
-                            if footer_row != -1:
-                                break
-                        
-                        # 위치를 찾지 못했으면 패스
+                            if footer_row != -1: break
+                            
                         if header_row == -1 or footer_row == -1:
                             continue
-                            
-                        sum_total = 0
-                        rows_kept = 0
+
+                        # --- 단계 2: 데이터 입력 및 행 삭제 (역순 처리) ---
+                        total_sum = 0
                         
-                        # ----------------------------------------------------
-                        # 4. 행 삭제가 꼬이지 않게 '아래에서 위로(역순)' 돌면서 작업
-                        # ----------------------------------------------------
+                        # 데이터가 들어가는 영역만 역순으로 순회하며 삭제/수정
                         for r in range(footer_row - 1, header_row, -1):
-                            p_name = ws.cell(row=r, column=col_name).value
-                            
-                            # 비어있는 행이거나 불필요한 행이면 삭제
-                            if not p_name or str(p_name).strip() == "":
+                            p_cell_val = ws.cell(row=r, column=col_name).value
+                            if not p_cell_val or str(p_cell_val).strip() == "":
                                 ws.delete_rows(r, 1)
                                 continue
-                                
-                            p_name_clean = str(p_name).strip()
                             
-                            # 두 번째 시트에서 낱개수 조회
-                            match = df_matrix[df_matrix['제품명'].astype(str).str.strip() == p_name_clean]
+                            p_name = str(p_cell_val).strip()
+                            # 두 번째 시트에서 수량 매칭
+                            match = df_matrix[df_matrix['제품명'].astype(str).str.strip() == p_name]
+                            
                             qty = 0
                             if not match.empty:
                                 val = match.iloc[0][center]
-                                if pd.notna(val) and str(val).replace('.0','').isdigit():
-                                    qty = int(float(val))
-                                    
-                            # [조건 1] 해당 지점에 배송할 제품이 있는 경우
+                                if pd.notna(val): qty = int(float(val))
+                            
                             if qty > 0:
-                                rows_kept += 1
-                                ws.cell(row=r, column=col_qty).value = qty # 낱개수 입력
+                                # 낱개수 입력
+                                write_safe(ws, r, col_qty, qty)
                                 
-                                # [조건 2] 원본 시트에 적힌 낱개가격 읽어오기
-                                price_val = ws.cell(row=r, column=col_price).value
+                                # 기존 낱개가격 읽기
                                 try:
-                                    price = int(float(str(price_val).replace(',', '')))
+                                    price_raw = ws.cell(row=r, column=col_price).value
+                                    price = int(float(str(price_raw).replace(',', '')))
                                 except:
                                     price = 0
-                                    
-                                # 할증 지점인 경우만 가격을 0원으로 덮어씀
+                                
+                                # 할증 지점은 0원 처리 및 명칭 변경
                                 if is_bonus:
                                     price = 0
-                                    ws.cell(row=r, column=col_price).value = 0
-                                    ws.cell(row=r, column=col_name).value = f"{p_name_clean} (할증분)"
-                                    
-                                # [조건 3] 수량 × 가격 = 공급가액 계산 및 입력
-                                total = qty * price
-                                ws.cell(row=r, column=col_total).value = total
-                                sum_total += total
+                                    write_safe(ws, r, col_price, 0)
+                                    write_safe(ws, r, col_name, f"{p_name} (할증분)")
                                 
-                                # (선택) Box 수 계산
-                                inbox_val = ws.cell(row=r, column=col_inbox).value
-                                try:
-                                    inbox = int(float(str(inbox_val)))
-                                    if inbox > 0:
-                                        ws.cell(row=r, column=col_box).value = qty // inbox
-                                except:
-                                    pass
-                                    
-                            # [조건 4] 해당 안 되는 제품은 행 전체를 완벽히 삭제
+                                # 공급가액 계산 및 입력
+                                row_total = qty * price
+                                write_safe(ws, r, col_total, row_total)
+                                total_sum += row_total
                             else:
+                                # 수량이 0인 제품은 행 삭제
                                 ws.delete_rows(r, 1)
-                                
-                        # ----------------------------------------------------
-                        # 5. 행이 삭제되어 위로 딸려 올라간 "합계"를 다시 찾아 표시
-                        # ----------------------------------------------------
-                        if rows_kept > 0:
-                            for r in range(header_row + 1, 200):
-                                for c in range(1, 20):
-                                    val = str(ws.cell(row=r, column=c).value).replace(" ", "")
-                                    if "합계" in val:
-                                        # 찾은 합계 줄의 '공급가액(total)' 열에 총액 입력
-                                        ws.cell(row=r, column=col_total).value = sum_total
-                                        break
-                                        
-                            # 엑셀 파일 저장 및 ZIP에 추가
-                            excel_io = io.BytesIO()
-                            wb.save(excel_io)
-                            excel_io.seek(0)
-                            
-                            safe_center = str(center).replace('\n', ' ').replace('/', '_').strip()
-                            zip_f.writestr(f"거래명세서_{safe_center}.xlsx", excel_io.read())
+
+                        # --- 단계 3: 최종 합계 갱신 ---
+                        # 행이 삭제되어 위치가 변한 합계 행을 다시 찾아 총액 기입
+                        for r in range(header_row + 1, 100):
+                            found = False
+                            for c in range(1, 15):
+                                if "합계" in str(ws.cell(row=r, column=c).value):
+                                    write_safe(ws, r, col_total, total_sum)
+                                    found = True
+                                    break
+                            if found: break
+
+                        # 메모리에 저장
+                        excel_out = io.BytesIO()
+                        wb.save(excel_out)
+                        zip_f.writestr(f"거래명세서_{str(center).strip()}.xlsx", excel_out.getvalue())
                 
-                # 결과물 다운로드
                 st.download_button(
-                    label="📦 요청사항 100% 반영된 엑셀 일괄 다운로드 (ZIP)", 
-                    data=zip_buffer.getvalue(), 
-                    file_name=f"거래명세서_최종본_{datetime.now().strftime('%m%d')}.zip",
+                    label="📦 최종 명세서 일괄 다운로드 (ZIP)",
+                    data=zip_buffer.getvalue(),
+                    file_name=f"거래명세서_완성본_{datetime.now().strftime('%m%d')}.zip",
                     mime="application/zip"
                 )
-                st.success("데이터 수정, 빈칸 줄 삭제, 합계 및 배송처 변경이 모두 완료되었습니다!")
+                st.success("모든 요청사항이 반영된 파일 생성이 완료되었습니다!")
 
         except Exception as e:
-            st.error(f"오류가 발생했습니다: {e}")
+            st.error(f"오류 발생: {e}")
 
 if __name__ == "__main__":
     main()

@@ -1,96 +1,34 @@
 import streamlit as st
 import pandas as pd
-from fpdf import FPDF
+import openpyxl
 import io
 import zipfile
-import os
-import urllib.request
 from datetime import datetime
 
-# 1. 한글 폰트 자동 설정
-def setup_resources():
-    font_file = "NanumGothic.ttf"
-    if not os.path.exists(font_file):
-        url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf"
-        urllib.request.urlretrieve(url, font_file)
-
-# 2. 첫 번째 시트 양식을 그대로 그리는 클래스
-class PerfectTemplatePDF(FPDF):
-    def __init__(self):
-        super().__init__()
-        self.add_font("NanumGothic", "", "NanumGothic.ttf")
-        self.set_font("NanumGothic", "", 10)
-
-    def draw_excel_header(self, center_name, info_data):
-        self.add_page()
-        # 타이틀
-        self.set_font("NanumGothic", "", 22)
-        self.cell(0, 15, "거  래  명  세  서", 0, 1, 'C')
-        self.set_font("NanumGothic", "", 9)
-        self.cell(0, 5, "(공급자받는자 보관용)", 0, 1, 'C')
-        self.ln(5)
-
-        # 날짜 정보
-        self.set_font("NanumGothic", "", 9)
-        self.cell(25, 8, "주문일자:", 0, 0)
-        self.cell(60, 8, info_data.get('order_date', ''), "B", 0)
-        self.cell(15, 8, "", 0, 0)
-        self.cell(25, 8, "배송일자:", 0, 0)
-        self.cell(0, 8, info_data.get('delivery_date', ''), "B", 1)
-        self.ln(3)
-
-        # 공급자 및 공급받는자 박스
-        curr_y = self.get_y()
-        
-        # [왼쪽: 공급자]
-        self.rect(10, curr_y, 90, 40)
-        self.set_xy(12, curr_y + 2)
-        self.set_font("NanumGothic", "", 8)
-        self.cell(15, 6, "등 록 번 호", 0, 0); self.set_font("NanumGothic", "", 10); self.cell(0, 6, ": 102-84-02171", 0, 1)
-        self.set_x(12); self.set_font("NanumGothic", "", 8); self.cell(15, 6, "상      호", 0, 0); self.set_font("NanumGothic", "", 9); self.cell(0, 6, ": 맨소래덤아시아퍼시픽㈜", 0, 1)
-        self.set_x(12); self.set_font("NanumGothic", "", 8); self.cell(15, 6, "대  표  자", 0, 0); self.set_font("NanumGothic", "", 9); self.cell(0, 6, ": 임현정", 0, 1)
-        self.set_x(12); self.set_font("NanumGothic", "", 8); self.cell(15, 6, "주      소", 0, 0); self.set_font("NanumGothic", "", 7); self.multi_cell(70, 4, ": 서울시 강남구 역삼동 772\n  동영문화센터빌딩 7층")
-
-        # [오른쪽: 공급받는자]
-        self.rect(105, curr_y, 95, 40)
-        self.set_xy(107, curr_y + 2)
-        self.set_font("NanumGothic", "", 8); self.cell(15, 6, "상      호", 0, 0); self.set_font("NanumGothic", "", 11); self.cell(0, 6, f": {center_name}", 0, 1)
-        
-        self.set_xy(10, curr_y + 45)
-        
-        # 테이블 헤더
-        self.set_font("NanumGothic", "", 9)
-        headers = ['No', '제품명', '입수', 'Box수', '낱개수', '단가', '공급가액']
-        widths = [10, 80, 15, 15, 20, 25, 25]
-        for i, h in enumerate(headers):
-            self.cell(widths[i], 10, h, 1, 0, 'C')
-        self.ln()
-        return widths
+# 필요 라이브러리: pip install streamlit pandas openpyxl
 
 def main():
-    st.set_page_config(page_title="명세서 PDF 변환기", layout="centered")
-    setup_resources()
+    st.set_page_config(page_title="명세서 엑셀 템플릿 자동화", layout="wide")
     
-    st.title("📄 지점별 거래명세서 일괄 생성기")
-    st.write("엑셀 파일을 업로드하면 지점별 명세서 PDF를 생성하여 압축 파일로 다운로드합니다.")
+    st.title("🎯 원본 엑셀 양식 100% 유지 명세서 자동 생성기")
+    st.info("첫 번째 시트의 양식(서식, 병합, 테두리)을 그대로 유지한 채, 지점별 엑셀 파일을 일괄 생성합니다.")
 
     uploaded_file = st.file_uploader("명세서 엑셀 파일을 업로드하세요 (.xlsx)", type=['xlsx'])
 
     if uploaded_file:
         try:
+            # pandas로 데이터 시트(두 번째 시트)만 읽어오기
             xls = pd.ExcelFile(uploaded_file)
-            
-            # 두 번째 시트 로드 (헤더 2줄 스킵)
             df_matrix = pd.read_excel(xls, sheet_name=xls.sheet_names[1], header=2)
             
-            # 제품 마스터 정보 (입수량, 단가)
+            # 단가 및 입수량 마스터
             product_master = {
                 "멘소래담 로션 75ml": {"inbox": 72, "price": 3780},
                 "멘소래담 로션 100ml": {"inbox": 72, "price": 4590},
                 "멘소래담 로션 450ml": {"inbox": 20, "price": 13950}
             }
 
-            if st.button("명세서 PDF 생성 및 다운로드"):
+            if st.button("지점별 명세서(Excel) 일괄 생성 및 다운로드"):
                 zip_buffer = io.BytesIO()
                 
                 with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_f:
@@ -98,54 +36,72 @@ def main():
                     centers = [c for c in df_matrix.columns if c not in ['제품명', '규격', 'Total'] and not pd.isna(c)]
                     
                     for center in centers:
-                        pdf = PerfectTemplatePDF()
-                        
-                        # 상단 날짜 정보 세팅 (오늘 날짜 기준)
-                        today_str = datetime.now().strftime('%Y-%m-%d')
-                        widths = pdf.draw_excel_header(str(center).strip(), {'order_date': today_str, 'delivery_date': today_str})
-                        
-                        rows_added = 0
-                        
-                        # 핵심 로직: 할증 여부 판단
                         is_bonus = '할증' in str(center) or '힐증' in str(center)
-
+                        
+                        data_rows = []
                         for idx, row in df_matrix.iterrows():
                             p_name = str(row['제품명']).strip()
                             qty = row[center]
                             
-                            # 수량이 있는 경우에만 행 추가
-                            if pd.notna(qty) and int(float(qty)) > 0:
+                            if pd.notna(qty) and str(qty).replace('.0','').isdigit() and int(float(qty)) > 0:
                                 info = product_master.get(p_name, {"inbox": 1, "price": 0})
-                                
-                                # 할증 지점은 단가 0원
                                 price = 0 if is_bonus else info['price']
                                 total = int(float(qty)) * price
-                                
-                                # 제품명에 할증 표기 추가
                                 display_name = f"{p_name} (할증분)" if is_bonus else p_name
                                 
-                                # PDF 표에 데이터 입력
-                                pdf.cell(widths[0], 8, str(rows_added + 1), 1, 0, 'C')
-                                pdf.cell(widths[1], 8, f" {display_name}", 1, 0, 'L')
-                                pdf.cell(widths[2], 8, str(info['inbox']), 1, 0, 'C')
-                                pdf.cell(widths[3], 8, str(int(float(qty)) // info['inbox']), 1, 0, 'C') # Box 수
-                                pdf.cell(widths[4], 8, str(int(float(qty))), 1, 0, 'C') # 낱개 수
-                                pdf.cell(widths[5], 8, format(price, ','), 1, 0, 'R')
-                                pdf.cell(widths[6], 8, format(total, ','), 1, 1, 'R')
-                                rows_added += 1
+                                data_rows.append({
+                                    'Product': display_name,
+                                    'InBox': info['inbox'],
+                                    'BoxQty': int(float(qty)) // info['inbox'] if info['inbox'] > 0 else 0,
+                                    'Qty': int(float(qty)),
+                                    'Price': price,
+                                    'Total': total
+                                })
 
-                        # 해당 지점에 내역이 하나라도 있으면 ZIP에 추가
-                        if rows_added > 0:
+                        # ★ 핵심: 해당 지점에 물량이 있으면 엑셀 원본 복사 후 데이터 덮어쓰기
+                        if data_rows:
+                            # 원본 엑셀 파일을 그대로 메모리에 로드 (서식 100% 유지)
+                            wb = openpyxl.load_workbook(uploaded_file)
+                            ws = wb.worksheets[0] # 첫 번째 시트 (템플릿)
+
+                            # 1. 공급받는자 상호 입력 (보내주신 CSV 기준 I열 10행 부근)
+                            # ※ 엑셀 파일에 따라 셀 위치가 다르면 'I10' 부분을 수정하세요 (예: 'H10', 'J10')
+                            ws['I10'] = str(center).strip()
+                            
+                            # 2. 오늘 날짜로 주문/배송일자 덮어쓰기 (필요시)
+                            # ws['C8'] = datetime.now().strftime('%Y-%m-%d') # 주문일자 셀
+                            # ws['G8'] = datetime.now().strftime('%Y-%m-%d') # 배송일자 셀
+
+                            # 3. 데이터 리스트 입력 (15행부터 시작한다고 가정)
+                            start_row = 15
+                            
+                            for row_idx, item in enumerate(data_rows):
+                                current_row = start_row + row_idx
+                                
+                                # 각 컬럼 위치에 값 넣기 (엑셀 열 알파벳에 맞춰 수정 가능)
+                                ws[f'A{current_row}'] = row_idx + 1         # No
+                                ws[f'C{current_row}'] = item['Product']     # 제품명
+                                ws[f'I{current_row}'] = item['InBox']       # 입수
+                                ws[f'K{current_row}'] = item['BoxQty']      # Box수
+                                ws[f'L{current_row}'] = item['Qty']         # 낱개수
+                                ws[f'M{current_row}'] = item['Price']       # 단가 (숫자)
+                                ws[f'N{current_row}'] = item['Total']       # 공급가액 (숫자)
+
+                            # 완성된 엑셀 객체를 바이트로 변환하여 ZIP에 추가
+                            excel_io = io.BytesIO()
+                            wb.save(excel_io)
+                            excel_io.seek(0)
+                            
                             safe_filename = str(center).replace('\n', ' ').replace('/', '_').strip()
-                            zip_f.writestr(f"거래명세서_{safe_filename}.pdf", bytes(pdf.output()))
+                            zip_f.writestr(f"거래명세서_{safe_filename}.xlsx", excel_io.read())
                 
                 st.download_button(
-                    label="📦 전체 명세서 압축파일(ZIP) 다운로드", 
+                    label="📦 전체 명세서 엑셀(ZIP) 다운로드", 
                     data=zip_buffer.getvalue(), 
-                    file_name=f"거래명세서_일괄생성_{datetime.now().strftime('%m%d')}.zip",
+                    file_name=f"거래명세서_엑셀일괄생성_{datetime.now().strftime('%m%d')}.zip",
                     mime="application/zip"
                 )
-                st.success("명세서 생성이 완료되었습니다!")
+                st.success("원본 양식이 100% 적용된 엑셀 파일 생성이 완료되었습니다!")
 
         except Exception as e:
             st.error(f"오류가 발생했습니다: {e}")
